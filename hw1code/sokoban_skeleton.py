@@ -172,16 +172,40 @@ grid13 = ['#################',
           '#      #  #######',
           '#      #        #',
           '#################']
-
+# Test for final
+grid14 = ['#######',
+          '#  o  #',
+          '#     #',
+          '#     #',
+          '#  x  #',
+          '#  R  #',
+          '#######']
+grid15 = ['#######',
+          '#    R#',
+          '#   # #',
+          '# x # #',
+          '#  # o#',
+          '#     #',
+          '#     #',
+          '#######']
+grid16 = ['#########',
+          '#    #  #',
+          '# x # R #',
+          '# ## ## #',
+          '#   #   #',
+          '#  ##   #',
+          '#  o#   #',
+          '#       #',
+          '#########']
 #
 #   CONFIGURATION: Select the GRID, TESTING, and FORWARD/BACKWARD.
 #
 
 # Choose the grid
-grid = grid05
+grid = grid16
 
 # Choose whether to try the testing.
-TESTING = True
+TESTING = False
 
 # Choose the search tree growth direction.
 FORWARD = True
