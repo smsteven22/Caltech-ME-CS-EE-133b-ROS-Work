@@ -1,397 +1,412 @@
-'''
-final_project.py
-'''
+import bisect
+import matplotlib.pyplot as plt
+import numpy as np
+import random
+import time
 
-import math
-from visualgrid import VisualGrid
-
-"""
-Define the grids:
-# = wall
-R = robot (starting position)
-x = soccer ball (starting position)
-o = target (ball goal position)
-* = "both x and o", a ball starting on a goal position
-"""
-grid01 = ['#######',
-          '#  o  #',
-          '#     #',
-          '#     #',
-          '#  x  #',
-          '#  R  #',
-          '#######']
-
-# Configuration: Select the GRID, TESTING, and FORWARD/BACKWARD.
-# Choose the grid
-grid = grid01
-
-# Choose whether to try the testing.
-TESTING = True
-
-# Choose the search tree growth direction.
-FORWARD = True
-
-# Colors
-WHITE  = [1.00, 1.00, 1.00]
-BLACK  = [0.00, 0.00, 0.00]
-RED    = [1.00, 0.00, 0.00]
-BROWN  = [0.59, 0.29, 0.00]
+from math               import pi, sin, cos, tan, atan2, sqrt, ceil, floor
+from shapely.geometry   import Point, MultiPoint, LineString, MultiLineString
+from shapely.geometry   import Polygon, MultiPolygon
+from shapely.prepared   import prep
 
 """
-General SPACE and MAZE Class
+Section 1: Algorithm Parameters
 
-Define
-    a) Individual spaces, which have a row and col.  These are
-       sortable by row, then column.  The also show the adjacents
-       spaces (RIGHT, UP, LEFT, DOWN) which are either None or
-       another valid space.  And a list of all valid neighbors
-       (adjacent spaces).
+Costs:
+    cstep           Cost per each step
+    chorizontal     Cost for each change in horizontal direction (left or right)
+    cvertical       Cost for each change in vertical direction (up or down)
 
-    b) The entire maze, which is a collection of the spaces, computed
-       from the above grids.  This also extracts the special spaces
-       (robot, boxes, targets) and provides visualization.
-"""
-# Define the directions (just to be more verbose/clear)
-class Direction:
-    RIGHT = 0
-    UP    = 1
-    LEFT  = 2
-    DOWN  = 3
-    DIRECTIONS = (  RIGHT,      UP,    LEFT,    DOWN)
-    OPPOSITES  = (   LEFT,    DOWN,   RIGHT,      UP)
-    DELTAS     = ((0,  1), (-1, 0), (0, -1), ( 1, 0))
-
-# Define the individual spaces.  Note (i) the class defines a
-# less-than operator, so spaces can be sorted (row, then column).  And
-# (ii) the class provides the neighbors both by direction (important
-# when pushing) or as a general list.
-    
-class Space:
-    def __init__(self, r, c):
-        # Define the variables.
-        self.r = r              # Row
-        self.c = c              # Column
-
-        # The adjacent/neighbors by direction and as a list.
-        self.adjacent  = [None] * len(Direction.DIRECTIONS)
-        self.neighbors = []
-
-    # Define the "less-than" to enable sorting by (row,col).
-    def __lt__(self, other):
-        return ((self.r < other.r) or
-                ((self.r == other.r) and (self.c < other.c)))
-
-    # Print (for debugging).
-    def __repr__(self):
-        return("(%2d,%2d)" % (self.r, self.c))
-    
-# Define the maze, being the collection of spaces, including the
-# neighbor connections.  This also identifies the special spaces and
-# provides a visualization.
-class Maze:
-    def __init__(self, grid):
-        # Check the size of the grid (maze).
-        rows = len(grid)
-        cols = len(grid[0])
-        for line in grid:
-            assert len(line) == cols, "Inconsistent lines in grid (maze)"
-
-        # Create the visual.
-        self.visual = VisualGrid(rows, cols)
-
-        # Create a sorted list of legal (non-wall) spaces.  Else mark black.
-        self.spaces = []
-        for r in range(rows):
-            for c in range(cols):
-                if grid[r][c] == '#':
-                    self.visual.color(r, c, BLACK)
-                else:
-                    self.spaces.append(Space(r,c))
-        self.spaces.sort()      # To be safe: they should already be sorted.
-
-        # Connect the spaces.
-        for space in self.spaces:
-            for (i, (dr, dc)) in enumerate(Direction.DELTAS):
-                matches = [s for s in self.spaces
-                           if (s.r,s.c) == (space.r+dr,space.c+dc)] + [None]
-                space.adjacent[i] = matches[0]
-            space.neighbors = [a for a in space.adjacent if a is not None]
-
-        # Pull out the robot, boxes, and targets (in sorted order!).
-        robots  = [s for s in self.spaces if grid[s.r][s.c] in 'Rr']
-        boxes   = [s for s in self.spaces if grid[s.r][s.c] in 'Xx*']
-        targets = [s for s in self.spaces if grid[s.r][s.c] in 'Oo*']
-        assert len(robots) == 1,            "Must have exactly one robot"
-        assert len(boxes)   > 0,            "Must have some boxes"
-        assert len(boxes)  == len(targets), "Unequal num boxes and targets"
-        self.robot   = robots[0]
-        self.boxes   = boxes
-        self.targets = targets
-
-        # Add the targets to the visual.
-        for target in self.targets:
-            self.visual.write(target.r, target.c, 'o')
-        self.show(wait=0.1)
-
-    # Show the visual.
-    def show(self, robot=None, boxes=None, wait=False):
-        # Grab default values if not specified.
-        if not robot: robot = self.robot
-        if not boxes: boxes = self.boxes
-        # Mark the robot as red, boxes as brown.
-        for s in [robot]: self.visual.color(s.r, s.c, RED)
-        for s in  boxes : self.visual.color(s.r, s.c, BROWN)
-        # Show
-        self.visual.show(wait)
-        # Clear the colors.
-        for s in [robot]: self.visual.color(s.r, s.c, WHITE)
-        for s in  boxes : self.visual.color(s.r, s.c, WHITE)
-
-    # Print (for debugging).
-    def __str__(self):
-        return(f"Robot:   {self.robot}\r\n" +
-               f"Boxes:   {self.boxes}\r\n" +
-               f"Targets: {self.targets}")
-    def __repr__(self):
-        s = str(self)
-        for space in self.spaces:
-            s += (f"r\n<Space {space} -> [%7s,%7s,%7s,%7s]>"
-                  % tuple('' if a is None else str(a) for a in space.adjacent))
-        return(s)
-    
-"""
-Planning Algorithm
-
-Define Node class (to contain the state as well as the search
-tree), as well as the actual algorithm.
-
-
-State Transition Function (moving forward in time): Given the space
-occupied by the robot together with the list of spaces occupied by
-the bxoes, as well as a direction of movement, return either None if
-the movement is not possible or the new robot space and new list of
-boxes.
+Grid Sizes:
+    dstep           Distance (meters) per grid cell
 """
 
-def transition(robot, boxes, direction):
-    '''
-    You are given:
-        robot which is a space (class Space above)
-        boxes which is a list of spaces occupied by boxes
-        direction in which the robot should (try to) move
+cstep = 1
+chorizontal = 100
+cvertical = 1
 
-    For the robot and each box you can therefore access
-        newrobot = oldrobot.adjacent[direction]
-        newbox   = oldbox.adjacent[direction]
-    being the adjacent space in the given direction!  If the movement
-    is not possible, this will be None.  That is, adjacent[direction]
-    is None if there is no adjacent space.
+dstep = 1
 
-    Please think in terms of space.adjacent[direction] to get
-    neighboring spaces - and not in terms of rows or columns.  The
-    former keeps things more general and hopefully more compact.
+"""
+Section 2: World Definitions
 
-    Basically, we ask you to implement the logic: if the robot
-    is pushing into a box, that box will also move (assuming
-    nothing is blocking it).
+(xmin, xmax, ymin, ymax)    Overall Dimensions
+(xstart, ystart)            Starting position
+(xgoal, ygoal)              Goal position
+walls                       Shapely MultiLineString object
+"""
+# General Numbers
+(lroad, wroad) = (20, 16)  # Field width
 
-    Please return either (i) None if the requested movement is not
-    legal/possible.  Or (ii) the tuple (newrobot, newboxes) being the
-    updated state.
+(xspace, lspace, wspace) = (8, 4, 2) # Goal pos/len/width
 
-    Running this should report test this transition and report:
-    
-        Testing results:
-        <Node R ( 2, 2), B ( 2, 3) ( 3, 2) with Cost 0>  
-        <Node R ( 2, 3), B ( 2, 4) ( 3, 2) with Cost 1>  
-        <Node R ( 1, 2), B ( 2, 3) ( 3, 2) with Cost 1> 
+# Overall size
+(xmin, xmax) = (0, lroad)
+(ymin, ymax) = (0, wroad+wspace)
 
-    showing (i) the starting state, and its two possible
-    children: (ii) having moved the first box to the right,
-    (iii) having moved up without changing the boxes.
+# Start and goal locations
+(xstart_robot, ystart_robot) = (16, 2)
+(xstart_ball, ystart_ball) = (5, 6)
+(xgoal, ygoal) = (xspace+(lspace/2), wroad+wspace - 1)
 
-    After that, the regular results should match the numbers
-    stated at the very top!
-    '''
-    nextSpace = robot.adjacent[direction]
-    if nextSpace == None:
-        return None
-    elif nextSpace in boxes:
-        thirdSpace = nextSpace.adjacent[direction]
-        if thirdSpace == None or thirdSpace in boxes:
-            return None
-        idx = boxes.index(nextSpace)
-        boxes[idx] = thirdSpace
-    
-    return (nextSpace, boxes)
+# Locations of obstacles (2x2 boxes)
+# The x/y coordinate is the center of the box.
+(obstx1, obsty1) = (3, 1)
+(obstx2, obsty2) = (3, 3)
+(obstx3, obsty3) = (10, 3)
+(obstx4, obsty4) = (12, 5)
+(obstx5, obsty5) = (14, 5)
+(obstx6, obsty6) = (16, 7)
+(obstx7, obsty7) = (19, 3)
+(obstx8, obsty8) = (4, 11)
+(obstx9, obsty9) = (6, 9)
+(obstx10, obsty10) = (8, 11)
+(obstx11, obsty11) = (10, 9)
+(obstx12, obsty12) = (15, 13)
+(obstx13, obsty13) = (17, 13)
+(obstx14, obsty14) = (17, 11)
+(obstx15, obsty15) = (4, 15)
 
-# Node class. This retains the state and the search tree data.  Note,
-# as we are instantiating the node as we build the tree, we already
-# know the parent and can set the cost at instantiation.  Otherwise,
-# this contains the children() function to determine, instantiate, and
-# return the possible child nodes (states).
+# Define the walls.
+walls = prep(MultiLineString([
+    LineString([[xmin, ymin], [xmax, ymin], [xmax, wroad], 
+                [xspace+lspace, wroad],[xspace+lspace, wroad+wspace], 
+                [xspace, wroad+wspace],[xspace, wroad], [xmin, wroad], 
+                [xmin, ymin]]),
+    LineString([[obstx1-1, obsty1-1], [obstx1+1, obsty1-1], [obstx1+1, obsty1+1], 
+                [obstx1-1, obsty1+1], [obstx1-1, obsty1-1]]),
+    LineString([[obstx2-1, obsty2-1], [obstx2+1, obsty2-1], [obstx2+1, obsty2+1], 
+                [obstx2-1, obsty2+1], [obstx2-1, obsty2-1]]),
+    LineString([[obstx3-1, obsty3-1], [obstx3+1, obsty3-1], [obstx3+1, obsty3+1], 
+                [obstx3-1, obsty3+1], [obstx3-1, obsty3-1]]),
+    LineString([[obstx4-1, obsty4-1], [obstx4+1, obsty4-1], [obstx4+1, obsty4+1], 
+                [obstx4-1, obsty4+1], [obstx4-1, obsty4-1]]),
+    LineString([[obstx5-1, obsty5-1], [obstx5+1, obsty5-1], [obstx5+1, obsty5+1], 
+                [obstx5-1, obsty5+1], [obstx5-1, obsty5-1]]),
+    LineString([[obstx6-1, obsty6-1], [obstx6+1, obsty6-1], [obstx6+1, obsty6+1], 
+                [obstx6-1, obsty6+1], [obstx6-1, obsty6-1]]),
+    LineString([[obstx7-1, obsty7-1], [obstx7+1, obsty7-1], [obstx7+1, obsty7+1], 
+                [obstx7-1, obsty7+1], [obstx7-1, obsty7-1]]),
+    LineString([[obstx8-1, obsty8-1], [obstx8+1, obsty8-1], [obstx8+1, obsty8+1], 
+                [obstx8-1, obsty8+1], [obstx8-1, obsty8-1]]),
+    LineString([[obstx9-1, obsty9-1], [obstx9+1, obsty9-1], [obstx9+1, obsty9+1], 
+                [obstx9-1, obsty9+1], [obstx9-1, obsty9-1]]),
+    LineString([[obstx10-1, obsty10-1], [obstx10+1, obsty10-1], [obstx10+1, obsty10+1], 
+                [obstx10-1, obsty10+1], [obstx10-1, obsty10-1]]),
+    LineString([[obstx11-1, obsty11-1], [obstx11+1, obsty11-1], [obstx11+1, obsty11+1], 
+                [obstx11-1, obsty11+1], [obstx11-1, obsty11-1]]),
+    LineString([[obstx12-1, obsty12-1], [obstx12+1, obsty12-1], [obstx12+1, obsty12+1], 
+                [obstx12-1, obsty12+1], [obstx12-1, obsty12-1]]),
+    LineString([[obstx13-1, obsty13-1], [obstx13+1, obsty13-1], [obstx13+1, obsty13+1], 
+                [obstx13-1, obsty13+1], [obstx13-1, obsty13-1]]),
+    LineString([[obstx14-1, obsty14-1], [obstx14+1, obsty14-1], [obstx14+1, obsty14+1], 
+                [obstx14-1, obsty14+1], [obstx14-1, obsty14-1]]),
+    LineString([[obstx15-1, obsty15-1], [obstx15+1, obsty15-1], [obstx15+1, obsty15+1], 
+                [obstx15-1, obsty15+1], [obstx15-1, obsty15-1]]),]))
+
+
+"""
+Section 3: Visualization
+"""
+# Visualization Utility Class
+class Visualization:
+    def __init__(self):
+        # Clear the current, or create a new figure.
+        plt.clf()
+
+        # Create new acex, enable the grid, and set axis limits.
+        plt.axes()
+        plt.grid(True)
+        plt.gca().axis('on')
+        plt.gca().set_xlim(xmin, xmax)
+        plt.gca().set_ylim(ymin, ymax)
+        plt.gca().set_aspect('equal')
+
+        # Show the walls
+        xticks = set([xstart_robot, xgoal])
+        yticks = set([ystart_robot, ygoal])
+        for lines in walls.context.geoms:
+            xticks.update(lines.xy[0])
+            yticks.update(lines.xy[1])
+            plt.plot(lines.xy[0], lines.xy[1], 'k-', linewidth=2)
+        plt.gca().set_xticks(list(xticks))
+        plt.gca().set_yticks(list(yticks))
+
+        # Show.
+        self.show()
+
+    def show(self, text = '', delay = 0.001):
+        # Show the plot.
+        plt.pause(max(0.001, delay))
+        # If text is specified, print and maybe wait for confirmation.
+        if len(text)>0:
+            if delay>0:
+                input(text + ' (hit return to continue)')
+            else:
+                print(text)
+
+    def drawNode(self, node, *args, **kwargs):
+        # Show the circle.
+        plt.plot(*node.robot.exterior.xy, *args, **kwargs)
+        plt.plot(*node.ball.exterior.xy, *args, **kwargs)
+
+    def drawEdge(self, head, tail, *args, **kwargs):
+        plt.plot([head.x, tail.x], [head.y, tail.y], *args, **kwargs)
+
+    def drawPath(self, path, *args, **kwargs):
+        for node in path:
+            self.drawNode(node, *args, **kwargs)
+            self.show(delay = 0.1)
+
+"""
+Section 4: Node
+
+Node Definition
+"""
+# Initialize the counters (for diagnostics only)
+nodecounter = 0
+donecounter = 0
+
+# Node Class
 class Node:
-    def __init__(self, robot, boxes, parent):
-        # Make sure the list of boxes is sorted!  Note, which box goes
-        # to which target is irrelevant, so we always keep the list of
-        # boxes and targets ordered.  This avoids duplicate states and
-        # makes is easy to compare boxes and targets!
-        boxes.sort()
+    def __init__(self, robot, ball):
+        # Setup the basic A* node.
+        super().__init__()
 
-        # Save the state
-        self.state = tuple([robot] + boxes)
+        # Remember the robot state (x, y, r).
+        self.robotx = robot[0]
+        self.roboty = robot[1]
+        self.robotr = robot[2]
 
-        # Save the individual elements to compute the children.
-        self.robot = robot      # Single space occupied by robot
-        self.boxes = boxes      # Sorted list of spaces with boxes
+        # Remember the ball state (x, y, r).
+        self.ballx = ball[0]
+        self.bally = ball[1]
+        self.ballr = ball[2]
 
-        # Set the parent, together with the number of steps.
-        self.parent = parent    # Link to parent node
-        if parent is None:      # Compute the cost coming from the parent.
-            self.cost = 0
-        else:
-            self.cost = parent.cost + 1
+        # Circle
+        self.robot = Point(self.robotx, self.roboty).buffer(self.robotr)
+        self.ball = Point(self.ballx, self.bally).buffer(self.ballr)
 
-    # Compute the children, i.e. the nodes/states that can be reached
-    # by one of the four actions (movement directions).  Return a list
-    # of these nodes which must consider what happens to the boxes.
-    def children(self):
-        # Build up the list of children, trying in each direction.
-        children = []
-        for direction in Direction.DIRECTIONS:
-            # Try the movement (copy the boxes list to isolate changes).
-            result = transition(self.robot, self.boxes.copy(), direction)
-            if result is not None:
-                children.append(Node(result[0], result[1], self))
-        return children
+        # Tree connectivity. Define how we got here (set defaults for now).
+        self.parent = None
+        self.vertical = 1       # +1 = up, 0 = horizontal, -1 = down
+        self.horizontal = 0     # +1 = right, 0 = vertical, -1 = left
 
-    # Print (for debugging).
+        # Cost/status.
+        self.cost = 0           # The cost to get here.          
+        self.done = False       # The path here is optimal.
+
+        # Count the node - for diagnostics only.
+        global nodecounter
+        nodecounter += 1
+        if nodecounter % 1000 == 0:
+            print("Sampled %d nodes... fully processed %d nodes" %
+                  (nodecounter, donecounter))
+        
+    # Utilities:
+    # In case we want to print the node.
     def __repr__(self):
-        s = "<Node R %s, B" % str(self.robot)
-        for b in self.boxes:
-            s += " %s" % str(b)
-        s += " with Cost %d>" % self.cost
-        return s
+        return ("<Robot XY %5.2f, %5.2f, Ball XY %5.2f, %5.2f> (vert %2d, hori %2d, cost %4d)" %
+                (self.robotx, self.roboty, self.ballx, self.bally, self.vertical, self.horizontal, self.cost))
+    
+    # Define the "less-than" to enable sorting by cost!
+    def __lt__(self, other):
+        return (self.cost < other.cost)
+    
+    # Determine the grid indices based on the coordinates.
+    # The x/y coordinates are regular numbers.
+    def indices(self):
+        return(round((self.robotx - xmin)/dstep),
+               round((self.roboty - ymin)/dstep),
+               round((self.ballx - xmin)/dstep),
+               round((self.bally - ymin)/dstep))
+    
+    # Forward Simulations
+    # Instantiate a new (child) node, based on driving from this node.
+    def nextNode(self, vertical, horizontal):
+        robotxnext = self.robotx + (horizontal * dstep)
+        robotynext = self.roboty + (vertical * dstep)
 
+        ballxnext = self.ballx
+        ballynext = self.bally
 
-#
-#   Search/Planner Algorithm
-#
-def planner(initrobot, initboxes, targets):
-    ####################  CHECK DIFFICULTY  ####################
-    # Compute the number of possible states/nodes.  Count the internal
-    # spaces, reachable by the robot.  Compute the combinations
-    internalspaces = [initrobot]
-    for space in internalspaces:
-        for n in space.neighbors:
-            if n not in internalspaces:
-                internalspaces.append(n)
-    L = len(internalspaces)
-    B = len(initboxes)
-    Nmax = L * math.comb(L-1, B)
-    print("# of internal spaces %d" % L)
-    print("# of boxes  %d"          % B)
-    print("# of possible states %d" % Nmax)
+        if (robotxnext == self.ballx and robotynext == self.bally):
+            ballxnext = robotxnext + (horizontal * dstep)
+            ballynext = robotynext + (vertical * dstep)
 
+        Nstep = 1
+        Nvertical = 0
+        Nhorizontal = 0
+        if self.vertical != vertical:
+            Nvertical = 1
+        if self.horizontal != horizontal:
+            Nhorizontal = 1
 
-    ####################  INITIALIZE  ####################
-    # Track the nodes created (seen) as a dictionary indexed by state.
-    nodes = {}
+        c = (cstep * Nstep) + (cvertical * Nvertical) + (chorizontal * Nhorizontal)
 
-    # Set up the starting on-deck queue, with zero cost (parent = None)
+        # Create the child node.
+        robotchild = [robotxnext, robotynext, self.robotr]
+        ballchild = [ballxnext, ballynext, self.ballr]
+        child = Node(robotchild, ballchild)
+
+        # Set the parent relationship.
+        child.parent = self
+        child.vertical = vertical
+        child.horizontal = horizontal
+        child.cost = self.cost + c
+
+        # Return
+        return child
+    
+    # Collision functions:
+    # Check whether in free space.
+    def inFreespace(self):
+        return (walls.disjoint(self.robot) and walls.disjoint(self.ball))
+    
+    # Check the local planner - whether this connects to another node.
+    # This is slightly approximate, but good fo the small steps.
+    def connectsTo(self, other):
+        return (walls.disjoint(self.robot.union(other.robot).convex_hull) and
+                walls.disjoint(self.ball.union(other.ball).convex_hull))
+
+"""
+Section 5: Planner
+
+Planner Functions
+"""
+def planner(startnode, goalnode):
+    # Create the grid to store one Node per square. Add 1 to the x/y 
+    # dimensions to include min and max values. See Node.robotindices() or
+    # Node.ballindices()
+    grid = np.empty((1 + int((xmax - xmin) / dstep),
+                     1 + int((ymax - ymin) / dstep),
+                     1 + int((xmax - xmin) / dstep),
+                     1 + int((ymax - ymin) / dstep)), 
+                     dtype='object')
+    print("Created %dx%dx%dx%d grid (with %d elements)" %
+          (np.shape(grid) + (np.size(grid),)))
+    
+    # Prepare the still empty *sorted* on-deck queue.
     onDeck = []
-    onDeck.append(Node(initrobot, initboxes, None))
 
-    # Record all nodes on this starting on-deck queue as seen/existing.
-    for node in onDeck:
-        nodes[node.state] = node
-
-
-    ####################  LOOP  ####################
-    # Define a report function.
-    def report(text, cost):
-        Nseen = len(nodes)
-        Ndeck = len(onDeck)
-        print(f"{text} nodes {Nseen:7d} ({100*Nseen/Nmax:6.3f}%), " +
-              f"done {Ndone:7d} ({100*Ndone/Nmax:6.3f}%), " +
-              f"on-deck {Ndeck:6d}, cost {cost:3d}")
+    # Begin with the start node on-deck and in the grid.
+    grid[startnode.indices()] = startnode
+    bisect.insort(onDeck, startnode)
 
     # Continually expand/build the search tree.
-    Ndone = 0
     while True:
-        # Show the current status:
-        if Ndone % 10000 == 0:
-            report("So far", onDeck[0].cost)
-
+        # Make sure we have something pending in the on-deck queue.
+        # Otherwise we are unable to find a path!
+        if not (len(onDeck) > 0):
+            return None
+        
         # Grab the next node (first on deck).
         node = onDeck.pop(0)
 
-        # Check whether we have reached the end.
-        if (node.boxes == targets):
+        # Mark this node as done.
+        node.done = True
+        global donecounter
+        donecounter += 1
+
+        # Break the loop if done.
+        if node.indices() == goalnode.indices():
+            grid[node.indices()] = goalnode
+            bisect.insort(onDeck, goalnode)
             break
+        
+        vertical = [-1, 0, 1]
+        horizontal = [-1, 0, 1]
 
-        # Process the children (save and add on-deck queue as needed).
-        children = node.children()
-        for child in children:
-            # Add the child only if not already seen.
-            if nodes.get(child.state, None) is None:
-                onDeck.append(child)
-                nodes[child.state] = child
+        for i in vertical:
+            for j in horizontal:
+                if i == 0 and j == 0:
+                    continue
+                
+                child = node.nextNode(i, j)
+                
+                if grid[child.indices()] == node:
+                    child = child.nextNode(i, j)
 
-        # Count the fully processed nodes.
-        Ndone += 1
+                if child.inFreespace() and child.connectsTo(node):
+                    if grid[child.indices()] == None:
+                        grid[child.indices()] = child
+                        bisect.insort(onDeck, child)
+                    else:
+                        prev = grid[child.indices()]
+                        if prev.done == False and child.cost < prev.cost:
+                            onDeck.remove(prev)
+                            grid[prev.indices()] = None
 
-        # Also make sure we still have something to look at!
-        if not (len(onDeck) > 0):
-            report("FAILED", node.cost)
-            return (None, nodes.values())
+                            grid[child.indices()] = child
+                            bisect.insort(onDeck, child)
 
-
-    ####################  BUILD PATH  ##############################
-    # Report the final metrics.
-    report("At END", node.cost)
-
-    # Build and return the path.
+    # Build the path.
     path = [node]
-    while node.parent is not None:
-        node = node.parent
-        path.insert(0, node)
-    return (path, nodes.values())
+    while path[0].parent is not None:
+        path.insert(0, path[0].parent)
+
+    # Return the path
+    return path
+
+"""
+Section 6: Testing and Main Function
+
+Test Functions
+"""
+def testplanner(visual):
+    # Test with three repeated action.
+    def testdrive1(visual, node, vertical, horizontal, color):
+        visual.drawNode(node, color='k', linewidth=2)
+        for i in range(3):
+            node = node.nextNode(vertical, horizontal)
+            visual.drawNode(node, color=color, linewidth=2)
+        
+    testdrive1(visual, Node([8.0, 7.0, 0.5], [8.0, 8.0, 0.25]), 1.0, 0.0, 'r')
+    visual.show("Showing the planner test cases")
 
 
-######################################################################
-#
-#  Main Code
-#
-if __name__== "__main__":
 
-    # Test the Node class.
-    if TESTING:
-        print("Testing results:")
-        testmaze = Maze(grid01)
-        testnode = Node(testmaze.robot, testmaze.boxes, None)
-        for node in [testnode] + testnode.children():
-            print(node, end=' ')
-            testmaze.show(robot=node.robot, boxes=node.boxes, wait=' ')
-        print("Regular results:")
+# Main Code
+def main():
+    # Create the figure.
+    visual = Visualization()
+    # Testing! FIXME: Change to False to run the regular code.
+    if False:
+        testplanner(visual)
+        return
+    
 
-    # Create/show the maze.
-    maze = Maze(grid)
-    print(maze)
+    # Create the start/goal nodes.
+    startrobot = [xstart_robot, ystart_robot, 0.5]
+    goalrobot = [xgoal, ygoal-1, 0.5]
+
+    startball = [xstart_ball, ystart_ball, 0.25]
+    goalball = [xgoal, ygoal, 0.25]
+
+    startnode = Node(startrobot, startball)
+    goalnode = Node(goalrobot, goalball)
+
+    # Show the start/goal nodes.
+    visual.drawNode(startnode, color='c', linewidth=2)
+    visual.drawNode(goalnode, color='m', linewidth=2)
+    visual.show("Showing basic world", 0)
 
     # Run the planner.
-    (path, nodes) = planner(maze.robot, maze.boxes, maze.targets)
+    print("Running planner...")
+    path = planner(startnode, goalnode)
 
-    # Show the steps.
+    # If unable to connect, show what we have.
     if not path:
-        print("UNABLE TO FIND A PATH")
-        input("Hit return to show all nodes")
-        for node in nodes:
-            print(node, end=' ')
-            maze.show(robot=node.robot, boxes=node.boxes, wait=' ')
-    else:
-        print("Found path with %d steps" % (len(path)-1))
-        input("Hit return to show path")
-        for node in path:
-            print(node)
-            maze.show(robot=node.robot, boxes=node.boxes, wait=0.1)
+        visual.show("UNABLE TO FIND A PATH")
+        return
+    
+    # Print/Show the path.
+    print("PATH found after sampling %d nodes" % nodecounter)
+    print("PATH length %d nodes, %d steps" % (len(path), len(path)-1))
+    for node in path:
+        print(node)
+    visual.drawPath(path, color='r', linewidth=2)
+    visual.show("Showing the path")
+
+if __name__== "__main__":
+    main()
